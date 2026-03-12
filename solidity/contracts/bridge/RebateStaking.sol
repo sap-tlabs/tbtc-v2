@@ -22,6 +22,7 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/math/SafeCastUpgradeable.sol";
 
 /// @title Contract for staking T token to get rebate on minting/redemption fees
+///        and to provide collateral backing for BTC intent confirmation tiers.
 contract RebateStaking is Initializable, OwnableUpgradeable {
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
@@ -65,6 +66,12 @@ contract RebateStaking is Initializable, OwnableUpgradeable {
 
     mapping(address => Stake) public stakes;
 
+    /// @notice Ratio used to convert staked T into a BTC-denominated collateral
+    ///         cap. The cap is calculated as:
+    ///         `collateralCap = stakedAmount / collateralPerToken`
+    ///         A value of 0 disables collateral cap queries.
+    uint256 public collateralPerToken;
+
     // Reserved storage space in case we need to add more variables.
     // The convention from OpenZeppelin suggests the storage space should
     // add up to 50 slots. Here we want to have more slots as there are
@@ -72,7 +79,7 @@ contract RebateStaking is Initializable, OwnableUpgradeable {
     // the struct in the upcoming versions we need to reduce the array size.
     // See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
     // slither-disable-next-line unused-state
-    uint256[50] private __gap;
+    uint256[49] private __gap;
 
     event RollingWindowUpdated(uint256 rollingWindow);
     event UnstakingPeriodUpdated(uint256 unstakingPeriod);
@@ -82,6 +89,7 @@ contract RebateStaking is Initializable, OwnableUpgradeable {
     event Staked(address staker, uint256 amount);
     event UnstakeStarted(address staker, uint256 amount);
     event UnstakeFinished(address staker, uint256 amount);
+    event CollateralPerTokenUpdated(uint256 collateralPerToken);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -398,5 +406,42 @@ contract RebateStaking is Initializable, OwnableUpgradeable {
         Stake storage stakeInfo = stakes[user];
         unstakingAmount = stakeInfo.unstakingAmount;
         unstakingTimestamp = stakeInfo.unstakingTimestamp;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // COLLATERAL CAP (for BTC intent confirmation tiers)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Updates the collateral-per-token ratio used to calculate
+    ///         a user's BTC-denominated collateral cap from their T stake.
+    /// @param _newCollateralPerToken New ratio. Set to 0 to disable.
+    /// @dev Requirements:
+    ///      - The caller must be the contract owner
+    function updateCollateralPerToken(uint256 _newCollateralPerToken)
+        external
+        onlyOwner
+    {
+        collateralPerToken = _newCollateralPerToken;
+        emit CollateralPerTokenUpdated(collateralPerToken);
+    }
+
+    /// @notice Returns the BTC-denominated collateral cap for a user
+    ///         based on their effective stake (staked minus unstaking).
+    ///         Used by the btc-intents orderbook to determine confirmation
+    ///         tier discounts.
+    /// @param user Address of the staker
+    /// @return cap Collateral cap in the same denomination as tBTC
+    function getCollateralCap(address user)
+        external
+        view
+        returns (uint256 cap)
+    {
+        if (collateralPerToken == 0) {
+            return 0;
+        }
+        Stake storage stakeInfo = stakes[user];
+        uint256 effectiveStake = stakeInfo.stakedAmount -
+            stakeInfo.unstakingAmount;
+        cap = effectiveStake / collateralPerToken;
     }
 }

@@ -788,6 +788,163 @@ describe("RebateStaking", () => {
     })
   })
 
+  describe("updateCollateralPerToken", () => {
+    before(async () => {
+      await createSnapshot()
+    })
+
+    after(async () => {
+      await restoreSnapshot()
+    })
+
+    context("when called not by the owner", () => {
+      it("should revert", async () => {
+        await expect(
+          rebateStaking.connect(governance).updateCollateralPerToken(1000)
+        ).to.be.revertedWith("Ownable: caller is not the owne")
+      })
+    })
+
+    context("when called by the owner", () => {
+      let tx: ContractTransaction
+
+      it("should update parameter", async () => {
+        const newRatio = 500
+        tx = await rebateStaking
+          .connect(deployer)
+          .updateCollateralPerToken(newRatio)
+        expect(await rebateStaking.collateralPerToken()).to.be.equal(newRatio)
+        await expect(tx)
+          .to.emit(rebateStaking, "CollateralPerTokenUpdated")
+          .withArgs(newRatio)
+      })
+
+      it("should allow setting to zero (disabled)", async () => {
+        tx = await rebateStaking
+          .connect(deployer)
+          .updateCollateralPerToken(0)
+        expect(await rebateStaking.collateralPerToken()).to.be.equal(0)
+        await expect(tx)
+          .to.emit(rebateStaking, "CollateralPerTokenUpdated")
+          .withArgs(0)
+      })
+    })
+  })
+
+  describe("getCollateralCap", () => {
+    const stakeAmount = defaultStakeAmount
+
+    before(async () => {
+      await createSnapshot()
+    })
+
+    after(async () => {
+      await restoreSnapshot()
+    })
+
+    context("when collateralPerToken is zero (disabled)", () => {
+      it("should return zero", async () => {
+        expect(
+          await rebateStaking.getCollateralCap(thirdParty.address)
+        ).to.be.equal(0)
+      })
+    })
+
+    context("when collateralPerToken is set", () => {
+      // Plain integer ratio, same pattern as rebatePerToken.
+      // 50M T staked = 1 tBTC of collateral cap.
+      const collateralRatio = ethers.BigNumber.from(50000000)
+      // With defaultStakeAmount = 100M T, expected cap = 2 tBTC (2e18 wei)
+      const expectedFullCap = to1e18(2)
+
+      before(async () => {
+        await createSnapshot()
+
+        await rebateStaking
+          .connect(deployer)
+          .updateCollateralPerToken(collateralRatio)
+      })
+
+      after(async () => {
+        await restoreSnapshot()
+      })
+
+      context("when user has no stake", () => {
+        it("should return zero", async () => {
+          expect(
+            await rebateStaking.getCollateralCap(thirdParty.address)
+          ).to.be.equal(0)
+        })
+      })
+
+      context("when user has a stake", () => {
+        before(async () => {
+          await createSnapshot()
+
+          await t.connect(deployer).mint(thirdParty.address, stakeAmount)
+          await t
+            .connect(thirdParty)
+            .approve(rebateStaking.address, stakeAmount)
+          await rebateStaking.connect(thirdParty).stake(stakeAmount)
+        })
+
+        after(async () => {
+          await restoreSnapshot()
+        })
+
+        it("should return collateral cap based on full stake", async () => {
+          expect(
+            await rebateStaking.getCollateralCap(thirdParty.address)
+          ).to.be.equal(expectedFullCap)
+        })
+
+        context("when user starts unstaking part of stake", () => {
+          const unstakeAmount = stakeAmount.div(2)
+
+          before(async () => {
+            await createSnapshot()
+
+            await rebateStaking
+              .connect(thirdParty)
+              .startUnstaking(unstakeAmount)
+          })
+
+          after(async () => {
+            await restoreSnapshot()
+          })
+
+          it("should return reduced collateral cap", async () => {
+            // Half unstaked => half the cap => 1 tBTC
+            const expectedHalfCap = to1e18(1)
+            expect(
+              await rebateStaking.getCollateralCap(thirdParty.address)
+            ).to.be.equal(expectedHalfCap)
+          })
+        })
+
+        context("when user fully unstakes", () => {
+          before(async () => {
+            await createSnapshot()
+
+            await rebateStaking
+              .connect(thirdParty)
+              .startUnstaking(stakeAmount)
+          })
+
+          after(async () => {
+            await restoreSnapshot()
+          })
+
+          it("should return zero collateral cap", async () => {
+            expect(
+              await rebateStaking.getCollateralCap(thirdParty.address)
+            ).to.be.equal(0)
+          })
+        })
+      })
+    })
+  })
+
   describe("finalizeUnstaking", () => {
     before(async () => {
       await createSnapshot()
